@@ -17,7 +17,15 @@ export type Card = {
   answer: string | null;
   result: string | null;
   link: string | null;
-  rule?: string;
+  /** How urgent the head of the card should look: blue / green / orange / red / grey. */
+  tone?: string | null;
+  /**
+   * A card that another system built itself, kept as it is. It carries actions of its own
+   * (the buttons of a business card, say), so the channel sends it unchanged instead of
+   * rendering one of its own. A click on it is not this hub's to answer: the channel
+   * hands it to whoever owns it.
+   */
+  raw?: string | null;
 };
 export type ChannelContext = {
   hub: Pick<Hub, "nextCard" | "delivered" | "failed" | "answer">;

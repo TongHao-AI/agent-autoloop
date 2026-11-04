@@ -4,19 +4,8 @@
 //   "channels": { "feishu": { "key": "…", "user": "ou_xxx" } } in config.json
 //   "channels": { "feishu": { "name": "飞书", "answerers": ["ou_xxx"] } } in rules.json: who may answer.
 import { execFile, spawn } from "node:child_process";
+import readline from "node:readline";
 import type { Card, ChannelContext } from "../../host/channels.ts";
-import { eachLine } from "../../host/lines.ts";
-import { commandLine } from "../../host/command.ts";
-
-/** Feishu sends these values as JSON in a string, which may be empty. */
-function safeJson(text: unknown): any {
-  if (typeof text !== "string" || !text) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-}
 
 function outcomeOf(card: Card) {
   const chosen = card.choice === null ? card.answer : card.options[card.choice];
@@ -28,6 +17,15 @@ function outcomeOf(card: Card) {
 
 /** One card, as it looks now: the options while it's open, what became of it after. */
 export function render(card: Card) {
+  // A card another system built itself is sent as it is: its own buttons carry its own actions,
+  // which this hub must not answer but hand over.
+  if (card.raw) {
+    try {
+      return JSON.parse(card.raw) as Record<string, unknown>;
+    } catch {
+      // A broken card falls through to the hub's own shape rather than failing the send.
+    }
+  }
   const outcome = outcomeOf(card);
   // Each option is a block across the card, its words wrapping: buttons in a row, one line high, cut long options off.
   const option = (label: string, index: number) => ({
@@ -41,50 +39,27 @@ export function render(card: Card) {
     elements: [{ tag: "div", text: { tag: "plain_text", content: label } }],
   });
   const afterwards = outcome ? [{ tag: "markdown", content: `**${outcome}**` }] : [];
-  const noteSaid =
-    card.kind === "notice" && card.answer
-      ? [{ tag: "div", text: { tag: "plain_text", content: `处理说明：${card.answer}` } }]
-      : [];
-  const noteForm =
-    card.kind === "notice"
-      ? [
-          {
-            tag: "form",
-            name: "handling_note",
-            elements: [
-              {
-                tag: "input",
-                name: "note",
-                input_type: "multiline_text",
-                rows: 2,
-                auto_resize: true,
-                max_length: 1000,
-                label: { tag: "plain_text", content: "处理说明（可不填）" },
-                label_position: "top",
-                placeholder: { tag: "plain_text", content: "比如：已回复他视频下周发；或：群发广告，不用管" },
-              },
-              {
-                tag: "button",
-                name: `handling_note_submit_${card.id}`,
-                form_action_type: "submit",
-                type: "primary",
-                text: { tag: "plain_text", content: "记录并结案" },
-              },
-            ],
-          },
-        ]
-      : [];
+  // A notice from outside may say how urgent it is: the head colour carries that, so an outside
+  // system's alerts read the same as the hub's own.
+  const TONES: Record<string, string> = {
+    blue: "blue",
+    green: "green",
+    orange: "orange",
+    red: "red",
+    grey: "grey",
+  };
+  const tone = card.tone ? TONES[String(card.tone)] : undefined;
   return {
     schema: "2.0",
     config: { update_multi: true, enable_forward: false },
     header: {
       title: { tag: "plain_text", content: card.title },
-      template: card.state === "open" ? "blue" : card.state === "closed" ? "grey" : "green",
+      template: tone ?? (card.state === "open" ? "blue" : card.state === "closed" ? "grey" : "green"),
     },
     body: {
       elements: [
         ...(card.text ? [{ tag: "markdown", content: card.text }] : []),
-        ...(card.state === "open" ? [...noteForm, ...card.options.map(option)] : [...afterwards, ...noteSaid]),
+        ...(card.state === "open" ? card.options.map(option) : afterwards),
       ],
     },
   };
@@ -94,10 +69,8 @@ export default async function feishu({ hub, options, log, signal }: ChannelConte
   const program = (options.lark as string | undefined) ?? "lark-cli";
   const lark = async (args: string[], input: string) => {
     const printed = await new Promise<string>((resolve, reject) => {
-      const child = execFile(
-        ...commandLine([program, ...args]),
-        { encoding: "utf8", timeout: 60_000, signal },
-        (error, stdout) => (error ? reject(error) : resolve(stdout)),
+      const child = execFile(program, args, { encoding: "utf8", timeout: 60_000, signal }, (error, stdout) =>
+        error ? reject(error) : resolve(stdout),
       );
       child.stdin!.on("error", reject);
       child.stdin!.end(input);
@@ -114,10 +87,10 @@ export default async function feishu({ hub, options, log, signal }: ChannelConte
   const updateMessage = (ref: string, content: string) =>
     lark(["im", "messages", "patch", "--message-id", ref, "--as", "bot", "--data", "-"], JSON.stringify({ content }));
 
-  /** Sends the card's words as a new message, or hands back the one an earlier try with this key already made. */
-  async function sendMessage(key: string, content: string) {
+  async function sendMessage(cardId: number, content: string) {
     const target = ["--user-id", owner, "--as", "bot", "--msg-type", "interactive"];
-    const once = ["--idempotency-key", key];
+    // The key is the card alone, not its version: a report that got lost must not make a second message.
+    const once = ["--idempotency-key", `agent-autoloop-card-${cardId}`];
     return (await lark(["im", "+messages-send", ...target, ...once, "--content", "-"], content)).data
       .message_id as string;
   }
@@ -136,20 +109,8 @@ export default async function feishu({ hub, options, log, signal }: ChannelConte
       try {
         const content = JSON.stringify(render(card));
         let ref = card.ref;
-        if (ref) {
-          try {
-            await updateMessage(ref, content);
-          } catch (error) {
-            // The bot may not be the sender of the message it is told to change, and Feishu refuses that outright. An open
-            // card stays as it is: the hub only counts answers on the message it first heard of, whose buttons still work.
-            if (card.state === "open") throw error;
-            // A settled one has no buttons: a second card is worse than one, a card frozen at the version before the answer
-            // is worse than both. The key has the version so that a retry of this one makes no third.
-            log(`card ${card.id}: couldn't update ${ref} (${error}); sending it again`);
-            await sendMessage(`agent-autoloop-card-${card.id}-v${card.version}`, content);
-          }
-          // The key is the card alone, not its version: a report that got lost must not make a second message.
-        } else ref = await sendMessage(`agent-autoloop-card-${card.id}`, content);
+        if (ref) await updateMessage(ref, content);
+        else ref = await sendMessage(card.id, content);
         await hub.delivered(card.id, card.version, ref);
       } catch (error) {
         log(`card ${card.id} not sent: ${error}`);
@@ -161,39 +122,48 @@ export default async function feishu({ hub, options, log, signal }: ChannelConte
   /** Only the owner's click on the card that was sent counts; the hub checks both. */
   async function clicked(line: string) {
     const event = JSON.parse(line);
-    const form = safeJson(event.form_value);
-    const value = safeJson(event.action_value);
-    // A form's submit button can't carry a value, so its name holds the card's number.
-    const named = /^handling_note_submit_(\d+)$/.exec(String(event.action_name ?? ""));
-    const cardId = Number.isInteger(value?.card) ? value.card : named ? Number(named[1]) : null;
-    if (!Number.isInteger(cardId)) return;
-    // A notice's only option is that it's been handled, so submitting the form picks it.
-    const choice = Number.isInteger(value?.choice) ? value.choice : form ? 0 : null;
-    if (choice === null) return;
-    const note = typeof form?.note === "string" ? form.note : undefined;
-    const given: { choice: number; by?: string; ref?: string; text?: string } = {
-      choice,
-      by: event.operator_id,
-      ref: event.message_id,
-    };
-    if (note !== undefined) given.text = note;
-    const answer = await hub.answer(cardId, given);
-    const how = form ? "note submitted" : "answered";
-    log(`card ${cardId}: ${how} by ${event.operator_id}, ${answer.changed ? "counted" : "already settled"}`);
+    const value = JSON.parse(event.action_value);
+    // ★ A card that isn't this hub's (no card number in its value) belongs to another system
+    //   that now sends through this same Feishu app — IPSG's own cards, with their own
+    //   actions (enqueue_bind, bind_direct, tri_decide…). Their clicks are not ours to answer;
+    //   hand them to whoever owns that logic.
+    if (!Number.isInteger(value.card) || !Number.isInteger(value.choice)) {
+      await forward(value, event);
+      return;
+    }
+    const answer = await hub.answer(value.card, { choice: value.choice, by: event.operator_id, ref: event.message_id });
+    log(`card ${value.card}: answered by ${event.operator_id}, ${answer.changed ? "counted" : "already settled"}`);
+  }
+
+  /** Hands a click on someone else's card to the system that owns it. */
+  async function forward(value: unknown, event: Record<string, unknown>) {
+    const target = typeof options.forward === "string" ? options.forward : "";
+    if (!target) {
+      log(`click on a foreign card was not handled (no forward target): ${JSON.stringify(value).slice(0, 120)}`);
+      return;
+    }
+    const body = JSON.stringify({ value, operator: event.operator ?? null, message_id: event.message_id ?? null });
+    const response = await fetch(target, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+      signal,
+    });
+    log(`forwarded a foreign card's click to ${target}: ${response.status}`);
   }
 
   async function listen() {
     while (!signal.aborted) {
       // stdin stays open: lark-cli ends an unbounded consume when its stdin closes.
-      const consume = spawn(...commandLine([program, "event", "consume", "card.action.trigger", "--as", "bot"]), {
+      const consume = spawn(program, ["event", "consume", "card.action.trigger", "--as", "bot"], {
         stdio: ["pipe", "pipe", "pipe"],
       });
-      // Unheard, this would end the whole hub. A process that never started still closes, which starts it again below.
-      consume.on("error", (error) => log(`the click listener couldn't run: ${error}`));
       const stop = () => consume.kill();
       signal.addEventListener("abort", stop);
-      eachLine(consume.stderr, log);
-      eachLine(consume.stdout, (line) => void clicked(line).catch((error) => log(`click not handled: ${error}`)));
+      readline.createInterface({ input: consume.stderr }).on("line", (line) => log(line));
+      readline
+        .createInterface({ input: consume.stdout })
+        .on("line", (line) => void clicked(line).catch((error) => log(`click not handled: ${error}`)));
       await new Promise((resolve) => consume.on("close", resolve));
       signal.removeEventListener("abort", stop);
       if (!signal.aborted) {

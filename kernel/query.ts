@@ -52,7 +52,7 @@ export function openInScope(view: View, run: Row) {
 }
 
 export function cardView(card: Row, env: Environment, ref: string | null = null, links = false) {
-  const { id, version, kind, state, title, text, recommend, choice, answer, by, result } = card;
+  const { id, version, kind, state, title, text, recommend, choice, answer, by, result, tone, raw } = card;
   const options: string[] = kind === "ask" ? JSON.parse(card.options) : state === "open" ? ["已处理"] : [];
   const link = links ? `${env.publicUrl.replace(/\/$/, "")}/c/${credential(env, "card", id, card.created_at)}` : null;
   const when = { createdAt: card.created_at, decidedAt: card.decided_at, closedAt: card.closed_at };
@@ -71,6 +71,8 @@ export function cardView(card: Row, env: Environment, ref: string | null = null,
     by,
     result,
     link,
+    tone: tone ?? null,
+    raw: raw ?? null,
     rule: card.rule,
     ...when,
   };
