@@ -67,6 +67,8 @@ export function render(card: Card) {
 
 export default async function feishu({ hub, options, log, signal }: ChannelContext) {
   const program = (options.lark as string | undefined) ?? "lark-cli";
+  /** What we already said about a click, so an impatient second click doesn't say it twice. */
+  const announced = new Map<string, number>();
   const lark = async (args: string[], input: string) => {
     const printed = await new Promise<string>((resolve, reject) => {
       const child = execFile(program, args, { encoding: "utf8", timeout: 60_000, signal }, (error, stdout) =>
@@ -142,14 +144,64 @@ export default async function feishu({ hub, options, log, signal }: ChannelConte
       log(`click on a foreign card was not handled (no forward target): ${JSON.stringify(value).slice(0, 120)}`);
       return;
     }
-    const body = JSON.stringify({ value, operator: event.operator ?? null, message_id: event.message_id ?? null });
-    const response = await fetch(target, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body,
-      signal,
+    const body = JSON.stringify({
+      value,
+      operator: event.operator ?? null,
+      operator_id: event.operator_id ?? null,
+      message_id: event.message_id ?? null,
+      chat_id: chatOf(event),
     });
-    log(`forwarded a foreign card's click to ${target}: ${response.status}`);
+    let said = "";
+    let ok = false;
+    try {
+      const response = await fetch(target, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        signal,
+      });
+      const text = await response.text();
+      let parsed: any = null;
+      try {
+        parsed = JSON.parse(text);
+      } catch {}
+      ok = response.ok && parsed?.ok !== false;
+      said = (parsed?.result?.message as string) || (parsed?.error as string) || "";
+      log(`forwarded a foreign card's click to ${target}: ${response.status}${said ? ` — ${said}` : ""}`);
+    } catch (error) {
+      said = `转交失败：${(error as Error).message}`;
+      log(`couldn't forward a foreign card's click to ${target}: ${error}`);
+    }
+    // The click's own answer used to be a toast, sent by the process that held the connection.
+    // That process is gone (this channel holds the connection now), and a toast cannot be pushed
+    // back into a callback we did not receive — so the person who clicked is told in the chat instead:
+    // otherwise a button that works but says nothing looks exactly like a button that is broken.
+    const chat = chatOf(event);
+    if (chat && said) await announce(chat, said, ok);
+  }
+
+  /** Where the click happened: the chat the card lives in. */
+  function chatOf(event: Record<string, unknown>) {
+    const candidates = [event.chat_id, (event as any)?.event?.chat_id, event.chatId];
+    return candidates.find((value): value is string => typeof value === "string" && value.startsWith("oc_")) ?? "";
+  }
+
+  /** One line in the chat: what happened to the click. */
+  async function announce(chat: string, said: string, ok: boolean) {
+    const text = ok ? `卡片按钮：${said}` : `卡片按钮处理失败：${said}`;
+    // One line per click would be one line per impatient click: keep it to one per minute.
+    const now = Date.now();
+    const key = `${chat}|${text}`;
+    if (now - (announced.get(key) ?? 0) < 60_000) return;
+    announced.set(key, now);
+    try {
+      await lark(
+        ["im", "+messages-send", "--chat-id", chat, "--as", "bot", "--msg-type", "text", "--content", "-"],
+        JSON.stringify({ text }),
+      );
+    } catch (error) {
+      log(`couldn't say what happened to the click: ${error}`);
+    }
   }
 
   async function listen() {
