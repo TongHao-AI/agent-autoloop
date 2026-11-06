@@ -361,7 +361,6 @@ export function createWorker({
     }
   }
 
-
   function read(entry: Entry, adapter: Adapter, code: number | null): Reading {
     const { out, err } = files(entry);
     try {
