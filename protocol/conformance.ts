@@ -84,13 +84,21 @@ export async function conformance(base: string, config: Probe, request: typeof f
   assert.equal(job.run, first.run);
   await call(`/v1/runs/${job.run}/started`, first.token, {}, 401);
   await call(`/v1/runs/${job.run}/started`, job.token, { session: `session-${tag}` });
+  // The worker may say how far the round has got; the hub takes it and keeps the round.
+  await call(
+    `/v1/work?claim=${tag}&wait=0&capacity=0&running=${job.run}&marks=${job.run}:m1`,
+    keys.worker,
+    undefined,
+    200,
+    "work",
+  );
   await call("/v1/events", keys.source, { ...event, id: `other-${tag}`, subject: `other-${tag}` });
   const otherJob = (await call(`/v1/work?claim=other-${tag}&wait=0`, keys.worker, undefined, 200, "work")).job;
   assert.ok(otherJob, "检查规则的 parallel 至少要是 2");
   assert.notEqual(otherJob.run, job.run);
   await call(`/v1/runs/${otherJob.run}/result`, job.token, { outcome: "done" }, 401);
   await call(`/v1/runs/${job.run}/result`, otherJob.token, { outcome: "done" }, 401);
-  await call(`/v1/runs/${otherJob.run}/result`, otherJob.token, { outcome: "done" });
+  await call(`/v1/runs/${otherJob.run}/result`, otherJob.token, { outcome: "blocked", summary: "等你处理" });
   await call(`/v1/runs/${job.run}/result`, job.token, { outcome: "unknown" }, 400);
   const result = {
     outcome: "done",

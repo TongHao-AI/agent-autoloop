@@ -96,7 +96,7 @@ export class World {
       if (!rows(this.view, "runs").some((r) => ["queued", "claimed", "unknown"].includes(r.state))) break;
     }
     assert.ok(
-      rows(this.view, "runs").every((r) => ["done", "nothing", "cancelled"].includes(r.state)),
+      rows(this.view, "runs").every((r) => ["done", "nothing", "blocked", "cancelled"].includes(r.state)),
       "故障停止后仍没结局",
     );
     return rows(this.view, "runs").length;

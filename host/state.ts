@@ -9,10 +9,11 @@ import { cronOf, eventRule, SCHEDULE, type Rules } from "../kernel/rules.ts";
 
 /** The columns of the read-only SQL views over the projections, which the queries here read. */
 const VIEWS = {
-  events: "id source key type subject summary detail link routed paused received_at",
+  events: "id source key type subject summary detail link routed paused received_at waited",
   runs:
     "id rule agent grp lane state attempts not_before claim last_result cancel_at resume session link created_at " +
-    "claimed_at seen_at finished_at manual summary error usage",
+    "claimed_at seen_at finished_at manual summary error usage" +
+    " progress progress_at mark mark_at",
   run_events: "run_id event_id",
   cards:
     "id key kind title text options recommend about state fyi quiet choice answer by result rule lane grp source " +

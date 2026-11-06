@@ -20,8 +20,8 @@ export const ingest = (source: string, input: unknown, now = Date.now()): EventA
   execute("ingest", [source, input], now);
 export const claimNext = (worker: string, claim: string, now = Date.now()): Job | null =>
   execute("claimNext", [worker, claim], now);
-export const heartbeat = (worker: string, running: number[], now = Date.now()) =>
-  execute("heartbeat", [worker, running], now);
+export const heartbeat = (worker: string, running: number[], now = Date.now(), marks?: Record<string, string>) =>
+  execute("heartbeat", [worker, running, marks], now);
 export const started = (run: number, token: string, input: unknown, now = Date.now()) =>
   execute("started", [run, token, input], now);
 type ReceiptAck = { rejected: Rejected[]; duplicate?: boolean };

@@ -10,6 +10,8 @@ export const WORKER_FRESH = 2 * MINUTE;
 export const RUN_LEASE = 5 * MINUTE;
 /** How long work can wait on a worker that doesn't come before the owner hears. */
 export const OFFLINE_AFTER = 10 * MINUTE;
+/** How long a round may stand still, with its worker still saying it is working, before it is called stuck. */
+export const PROGRESS_STALE = 15 * MINUTE;
 /**
  * How often being seen goes in the log. A worker asks every second with work in hand and a fact is a disk sync, so a stamp
  * can be behind the last contact by this much. It has to stay under what reads it: with the 50 seconds between idle polls,
@@ -61,7 +63,10 @@ export function deadlines(view: View, now: number) {
     }
     if (!seen || now - Date.parse(seen.seen_at) > WORKER_FRESH) continue;
     for (const run of waiting.filter((run) => run.state === "claimed")) {
-      const at = Math.max(now, Date.parse(run.seen_at) + RUN_LEASE + 1);
+      // A round that reports how far it has got is judged by that; one that doesn't is judged by whether it is still named.
+      const since = run.mark ? Date.parse(run.mark_at) : Date.parse(run.seen_at);
+      const limit = run.mark ? PROGRESS_STALE : RUN_LEASE;
+      const at = Math.max(now, since + limit + 1);
       if (at <= Date.parse(seen.seen_at) + WORKER_FRESH) add("lease", String(run.id), at);
     }
   }

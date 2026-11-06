@@ -160,7 +160,13 @@ async function work(call: Call) {
   const claim = url.searchParams.get("claim") ?? "";
   if (!claim || claim.length > 200) throw new InputError("claim 是这次领活的编号，最多 200 字");
   const running = (url.searchParams.get("running") ?? "").split(",").filter((id) => POSITIVE_ID.test(id));
-  act(call, "heartbeat", worker, running.map(Number));
+  // How far each round has got, as the worker sees it: run id and mark, pairs.
+  const marks = (url.searchParams.get("marks") ?? "")
+    .split(",")
+    .map((pair) => pair.split(":"))
+    .filter(([id, mark]) => POSITIVE_ID.test(id ?? "") && /^[A-Za-z0-9_-]{1,64}$/.test(mark ?? ""))
+    .reduce<Record<string, string>>((all, [id, mark]) => ({ ...all, [id]: mark }), {});
+  act(call, "heartbeat", worker, running.map(Number), marks);
   const until = waitUntil(call);
   for (;;) {
     if (!whose(services.view(), "worker", token)) throw new AuthError("密钥已失效");

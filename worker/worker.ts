@@ -3,7 +3,7 @@
 // find it still going, or finished. A job is saved before anything slow happens; a result is saved before it's handed
 // in and stays until the hub has taken it.
 import { execFileSync, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
   existsSync,
@@ -68,6 +68,8 @@ type Entry = {
   told?: string;
   stopping?: number;
   why?: "cancel" | "timeout" | "finished";
+  /** How far the round says it has got, as the worker sees it. */
+  mark?: string;
   result?: Result;
 };
 export type WorkerHub = Pick<Hub, "work" | "started" | "result">;
@@ -81,6 +83,20 @@ export type WorkerOptions = {
   wait?: number;
   now?: () => number;
 };
+
+/**
+ * How far the round has got, as the Agent wrote it down: the mark changes only when the round moves, so the hub can tell
+ * a round that is working from one that is standing still. No progress file means it has said nothing.
+ */
+function markOf(entry: Entry) {
+  const file = path.join(entry.dir, "progress.json");
+  if (!existsSync(file)) return undefined;
+  try {
+    return createHash("sha256").update(readFileSync(file, "utf8")).digest("hex").slice(0, 32);
+  } catch {
+    return undefined;
+  }
+}
 
 function save(entry: Entry) {
   const file = path.join(entry.dir, "entry.json");
@@ -214,7 +230,7 @@ export function createWorker({
     });
 
   /** Starts a turn of the agent: a process that outlives this one, leaving its output and exit code in files. */
-  function launch(entry: Entry, adapter: Adapter, prompt: string) {
+  function launch(entry: Entry, adapter: Adapter, prompt: string, agent: Job["agent"] = entry.job.agent) {
     entry.turn += 1;
     entry.launchedAt = now();
     entry.usageBaseline = entry.resume ? loadUsage(entry.job.agent.use, entry.resume) : undefined;
@@ -223,7 +239,7 @@ export function createWorker({
     delete entry.stopping;
     delete entry.why;
     save(entry);
-    const { rule, agent } = entry.job;
+    const { rule } = entry.job;
     const cwd = rule.cwd.replace(/^~(?=[/\\])/, homedir());
     const turn: Turn = {
       prompt,
@@ -329,15 +345,22 @@ export function createWorker({
     // Kept before anything slow: a worker stopped from here on still has the job.
     save(entry);
     try {
-      writeFileSync(path.join(dir, "context.json"), JSON.stringify(job.context, null, 2), { mode: 0o600 });
+      const contextFile = path.join(dir, "context.json");
+      writeFileSync(contextFile, JSON.stringify(job.context, null, 2), { mode: 0o600 });
+      entry.prompt = promptFor(job, contextFile);
       const adapter = await adapterFor(job.agent.use);
-      entry.prompt = promptFor(job, path.join(dir, "context.json"));
       save(entry);
       launch(entry, adapter, entry.prompt);
     } catch (error) {
-      endWith(entry, { outcome: "failed", error: String((error as Error).message ?? error).slice(0, 500) });
+      // It never got going: the machine, the program or the model was the reason, not the work.
+      endWith(entry, {
+        outcome: "failed",
+        failure: "transient",
+        error: String((error as Error).message ?? error).slice(0, 500),
+      });
     }
   }
+
 
   function read(entry: Entry, adapter: Adapter, code: number | null): Reading {
     const { out, err } = files(entry);
@@ -368,7 +391,7 @@ export function createWorker({
   }
 
   /** A turn has ended. What it said is a result, or a reason to ask it again without redoing anything. */
-  function conclude(entry: Entry, adapter: Adapter, code: number | null) {
+  async function conclude(entry: Entry, adapter: Adapter, code: number | null) {
     // One ended because its turn was over but it wouldn't exit said what it had to say first.
     const seen = read(entry, adapter, entry.finishedAt ? 0 : code);
     entry.usage = addUsage(addUsage(entry.usage, seen.usage), sessionRise(entry, seen));
@@ -400,7 +423,14 @@ export function createWorker({
           return endWith(entry, { outcome: "failed", error: String(failure).slice(0, 500) });
         }
       }
-      return endWith(entry, { outcome: "failed", error: error.slice(0, 500), ...known, ...usage });
+      // It died without an answer: that is the environment, not the work it was asked to do.
+      return endWith(entry, {
+        outcome: "failed",
+        failure: "transient",
+        error: error.slice(0, 500),
+        ...known,
+        ...usage,
+      });
     }
     const { result, problem } = resultFrom(readMessage(seen.text), { session, usage: entry.usage });
     if (entry.repairs && !problem && result.outcome === "failed") return discardReceipt(entry, adapter, result.error!);
@@ -463,12 +493,12 @@ export function createWorker({
           error: "停止信号发出后没能确认进程组已结束：这一轮按没跑成记，不再重试，进程可能还在。",
         });
       }
-      return conclude(entry, adapter, exitCode());
+      return await conclude(entry, adapter, exitCode());
     }
-    if (existsSync(exit)) return conclude(entry, adapter, exitCode());
+    if (existsSync(exit)) return await conclude(entry, adapter, exitCode());
     // The shell can publish its exit between the first file check and ps returning.
     const looking = alive(entry);
-    if (looking === false) return conclude(entry, adapter, exitCode());
+    if (looking === false) return await conclude(entry, adapter, exitCode());
     // Unable to look, the run counts as still going, so its timeout and its finished turn still end it.
     if (looking === null && !blind) log(`couldn't inspect processes; runs count as going until they end or time out`);
     blind = looking === null;
@@ -572,11 +602,23 @@ export function createWorker({
     const held = entries();
     let reachable = true;
     try {
+      const marks: Record<number, string> = {};
+      for (const entry of held) {
+        const mark = markOf(entry);
+        if (mark) {
+          if (mark !== entry.mark) {
+            entry.mark = mark;
+            save(entry);
+          }
+          marks[entry.run] = mark;
+        }
+      }
       const answer = await hub.work({
         claim,
         wait: held.length ? 1 : wait,
         running: held.map((entry) => entry.run),
         capacity: held.length < capacity,
+        marks,
       });
       for (const id of answer?.cancel ?? []) {
         const entry = held.find((entry) => entry.run === id);

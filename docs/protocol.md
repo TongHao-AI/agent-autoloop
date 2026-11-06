@@ -182,7 +182,9 @@ POST /v1/runs/12/result    Authorization: Bearer <token>   Result
 ```jsonc
 // Result
 {
-  "outcome": "done" | "nothing" | "failed" | "cancelled",
+  "outcome": "done" | "nothing" | "failed" | "blocked" | "cancelled",
+  "failure": "transient" | "business",   // 失败的两类：环境没成，还是这件事没做成
+  "progress": { "stage": "这一步在做什么", "done": 3, "total": 7, "note": "一句话留给看的人" },
   "summary": "一句话", "error": "没跑成的原因", "session": "…",
   "usage": { "input": 0, "output": 0, "cached": 0, "cost": 0 },
   // 下面就是回执，一个事务里一次生效
@@ -313,6 +315,12 @@ POST /v1/rules/巡检/run        { "subject": "#12", "reason": "看一眼" }    
 
 `agent-autoloop check [文件]` 只读文件、校验规则，不打开中台数据库，也不把文件载入中台；不写文件名就查 `rules.json`。可以先校验一份草稿再换上去。`/v1/state` 一次给最近 60 轮，`?before=<nextBefore>` 翻更早的。
 
+回答会回到**提问的那条规则**，不用另配一条接回答的规则。提问之后那条规则被改名或删掉了，
+回答照样记在卡片上，但没有活接着干——这时会给你一张通知说明这件事，不会悄悄停下。
+
+这一轮在等你的时候，同一件事后来的事件**并进这一轮**，不另开一轮并行干活；你回答后，
+这些事件一起带进接下去的那一轮。
+
 `/v1/state` 的 `spending.today`、`spending.week` 独立于分页，按规则时区的今天和过去 7 × 24 小时的完成时间汇总。每项含 `rounds`、`tokens`、`cost`、`missingTokens`、`missingCost`，后两项是没报对应用量的轮数；从未开始就取消的轮次不计入。
 
 首页还会返回尚未到期的 `timers`，每项包含 `rule`、`lane`、`key`、`about` 和 `at`；翻历史页时该字段为空。本人客户端可据此区分正常等待复查与已经没有后续动作的事项。
@@ -327,6 +335,8 @@ POST /v1/rules/巡检/run        { "subject": "#12", "reason": "看一眼" }    
 | 领活的响应丢了                           | 同一个 `claim` 拿回同一份活                                                                                                                                                                                                         |
 | 交结果的响应丢了                         | 重放得到同样的确认                                                                                                                                                                                                                  |
 | Agent 没跑成                             | 5 分钟后重派，每次翻倍，最长 1 小时；期间来的同一事项的事件并进这一轮；连续第 3 次告诉你；连续第 10 次不再重试，这一轮记为 `cancelled` 并发一张通知卡片，正在跑时新来的事件另算一轮；这一轮结束或被停掉时，说它会再试的卡片一起关掉 |
+| 环境没成（起不来、网关超时、Agent 死了没留下话） | 交 `failure: "transient"`：1 分钟后重派，每次翻倍，最长 15 分钟——这类常常自己就好了 |
+| 这件事没做成（Agent 自己说没跑成） | 不写 `failure`（或写 `business`）：按 5 分钟起步、封顶 1 小时等 |
 | 需要本人恢复浏览器连接、登录或验证       | 本轮结束，保留已完成业务和待验收项，用问题卡片等回答，不自动重派                                                                                                                                                                    |
 | 原会话接不上                             | 开新会话，靠资料文件接着干                                                                                                                                                                                                          |
 | 接上了原会话，干到一半断了               | 算没跑成，留在原会话按上面的节奏重派，不开新会话把业务重做一遍                                                                                                                                                                      |

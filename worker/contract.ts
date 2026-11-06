@@ -3,12 +3,14 @@
 // all checked at the door. What people wrote stays in the context file, marked as data. Everything else an Agent wants
 // of the hub it writes in a receipt, so it needs no tool, no key and no connection to the hub at all.
 import { InputError } from "../kernel/errors.ts";
+import path from "node:path";
 import type { Job } from "../protocol/job.ts";
 import { parseResult, type Result } from "../protocol/validate.ts";
 
 const FAILED = ["没跑成", "FAILED"];
 const NOTHING = ["没事可做", "NOTHING"];
-const RECEIPT_FIELDS = ["ask", "notice", "resolve", "later", "events"];
+const BLOCKED = ["待你处理", "BLOCKED"];
+const RECEIPT_FIELDS = ["ask", "notice", "resolve", "later", "events", "progress"];
 // A fence closes only on a line of its own. A JSON string can't hold a raw newline, so a ``` inside one, as in an issue
 // body carried in an event's detail, is never the end of the block.
 const BLOCK = /(?<=^|\n)[ \t]*```agent-autoloop[ \t]*\r?\n((?:[^\n]*\n)*?)[ \t]*```[ \t]*(?=\r?\n|$)/g;
@@ -52,13 +54,20 @@ export function promptFor(job: Job, contextFile: string) {
     `- 这些事要先征求决定：${askFirst.join("、")}。其余能自己处理的直接做完。定过的事不要再问。`,
     "- 不要停下来等回答。要问人就把问题写进回执、结束这一轮；回答来了会再派给你，接着这个会话。",
     "- 只有本人才能恢复的连接、登录或身份验证等阻塞：保留已完成的业务和未验收项，第一行写“待你处理：”加具体原因，" +
-      "用 ask 说明需要本人做什么、恢复后怎么继续；about 写清只接着做剩余步骤，不重做已完成的业务。不把未验收说成已通过。",
+      "用 ask 说明需要本人做什么、恢复后怎么继续；about 写清只接着做剩余步骤，不重做已完成的业务。不把未验收说成已通过。" +
+      "写“待你处理”的这一轮中台不会再自动重派，问题一次写清楚。",
     "- 同一阻塞已有 open 卡片时不重复提问；不用 later 定时重试，waiting 里同一阻塞已有的复查用 later 的 cancel 取消。",
     "- 等自己的改动检查、合并或发布不算没跑成；等不到结果就用 later 约好下次核实。",
+    "",
+    "让中台知道你还在往前走：每做完一步，把进展写进 " +
+      path.join(path.dirname(contextFile), "progress.json") +
+      '（内容如 {"stage":"收数据","done":3,"total":7}），做完就改。' +
+      "中台看这个文件判断这一轮是不是还在动：长时间没动过，它会以为这一轮卡住了。",
     "",
     "最后一条消息的第一行写结论（一般只进记录；规则要求每轮都通知时会发给人）：",
     "- 可以自动重试的临时失败：写“没跑成：”加一句大白话原因，过几分钟会重派。要人决定或恢复的事不写“没跑成”。",
     "- 看过了，没有要做的：写“没事可做：”加一句原因。",
+    "- 只有本人能解开、这一轮就停在这儿：写“待你处理：”加一句原因。",
     "- 其余：一句话说做成了什么。",
     "",
     "需要中台做事时，在最后一条消息的末尾附一个回执：" +
@@ -69,7 +78,8 @@ export function promptFor(job: Job, contextFile: string) {
  "notice":[{"title":"一句话","text":"非他亲自做不可的事：要他做什么"}],
  "resolve":[{"card":12,"reason":"在哪核实了已解决或本人已决定"}],
  "later":[{"key":"这次复查的固定名字","at":"带时区的时间，比如 2026-11-05T09:00:00+08:00",\
-"about":"到时候查什么、怎么算过"}]${emits}}`,
+"about":"到时候查什么、怎么算过"}],
+ "progress":{"stage":"这一步在做什么","done":3,"total":7,"note":"一句话留给看的人"}}${emits}}`,
     "```",
     "- ask 和 notice 会打断人，能不发就不发。写给不看代码、也看不到这一轮对话的人：" +
       "出了什么事，现在恢复没有，有什么影响，要他做什么或你的建议。不写技术缩写、状态码、文件路径和内部编号。" +
@@ -84,7 +94,7 @@ export const repairPrompt = (problem: string) =>
   "只把最后一条消息按格式重写一遍：第一行是结论，末尾一个标记为 agent-autoloop 的代码块，里面是合法的 JSON。";
 
 type Message = {
-  outcome: "done" | "nothing" | "failed";
+  outcome: "done" | "nothing" | "failed" | "blocked";
   summary?: string;
   error?: string;
   receipt?: Record<string, unknown>;
@@ -111,9 +121,11 @@ export function readMessage(said: string): Message {
   const rest = (word: string) => first.slice(word.length).replace(/^[\s:：]+/, "");
   const failed = FAILED.find((word) => first.startsWith(word));
   const nothing = NOTHING.find((word) => first.startsWith(word));
+  const blocked = BLOCKED.find((word) => first.startsWith(word));
   let message: Message = { outcome: "done", summary: first };
   if (failed) message = { outcome: "failed", error: rest(failed) || "没说原因" };
   else if (nothing) message = { outcome: "nothing", summary: rest(nothing) };
+  else if (blocked) message = { outcome: "blocked", summary: rest(blocked) || "等你处理" };
   const block = blocks.at(-1)?.[1];
   if (block === undefined && OPENED.test(said)) {
     return { ...message, problem: "回执的代码块没有结尾：结尾的 ``` 要单独占一行" };

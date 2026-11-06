@@ -127,6 +127,11 @@ Order checked. We have enough stock in the warehouse.
 
 Besides `ask`, receipts can send notifications (`notice`), resolve open cards (`resolve`), schedule follow-up checks (`later`), and emit new events (`events`). A notice asks for nothing, but you can add a line of your own when you settle one, and it stays on the card; one marked `fyi` is only there to tell you, and has no button. If the JSON is invalid, the hub has the agent rewrite just that final message in the same session, without repeating completed work. If rewriting also fails, it keeps the original conclusion and tells you the receipt was not applied (a plain command has no session, so it goes straight to this). Going on in an old session works the same way: a new session starts only when the old one can't be continued. If it was continued and then broke partway, the run counts as failed and is retried in that session a few minutes later, not redone in a new one. A new event on the same thread starts a new session by default; with `"resume": true` in the rule it goes on in the last round's session.
 
+A receipt may also carry `progress` (which step this round reached, how many are done, how many in all). The agent writes it to `progress.json` in its own working folder, and the hub uses it to tell a round that is moving from one that has stalled — a round that stands still too long is called stuck and you are told. Rounds that never report progress are still judged by whether the worker names them. When a round is blocked on something only you can undo, its last message starts with “待你处理” (waiting for you): it is not retried on its own, it only asks. While it waits, later events about the same thing join that round instead of booking a second one; your answer carries them into the round that continues.
+
+Failures are two kinds and each waits its own time: the environment failing (it never started, the gateway timed out, the agent died without saying anything) is retried in a minute and waits at most fifteen; the work itself failing waits five minutes at first and at most an hour.
+
+
 ## Ready-to-use recipes
 
 Each recipe includes rules, a task Skill, and setup instructions (written in Chinese).

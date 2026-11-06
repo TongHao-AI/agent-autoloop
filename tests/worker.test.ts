@@ -130,14 +130,33 @@ export default {
 
 let nextRun = 1;
 const job = (
-  over: { use?: string; command?: string[]; session?: string | null; timeout?: number; cwd?: string } = {},
+  over: {
+    use?: string;
+    command?: string[];
+    session?: string | null;
+    timeout?: number;
+    cwd?: string;
+    mode?: "run" | "shadow";
+    assess?: {
+      to: string;
+      prompt: string;
+      agent: {
+        id: string;
+        name: string;
+        use: string;
+        access: string;
+        command?: string[];
+      };
+    };
+  } = {},
 ) => ({
   run: nextRun++,
   token: `token-${nextRun}`,
   attempt: 1,
   session: over.session ?? null,
   askFirst: ["删数据"],
-  rule: { name: "意见", cwd: over.cwd ?? folder, prompt: "按手册做。" },
+  rule: { name: "意见", cwd: over.cwd ?? folder, prompt: "按手册做。", ...(over.mode && { mode: over.mode }) },
+  ...(over.assess && { assess: over.assess }),
   agent: {
     id: "a",
     name: "甲",
@@ -232,6 +251,24 @@ function gate(name: string) {
     open: () => writeFileSync(file, ""),
   };
 }
+
+test("a round that died without an answer is the environment's fault, not the work's", async () => {
+  const hub = fakeHub();
+  hub.jobs.push(job({ command: ["/bin/sh", "-c", "exit 3"] }));
+  const w = worker(hub);
+  await until(w, () => hub.results.length === 1);
+  assert.equal(hub.results[0].outcome, "failed");
+  assert.equal(hub.results[0].failure, "transient");
+});
+
+test("a round the agent itself gave up on is the work's fault", async () => {
+  const hub = fakeHub();
+  hub.jobs.push(job({ command: ["/bin/sh", "-c", "echo 没跑成：网卡没起来"] }));
+  const w = worker(hub);
+  await until(w, () => hub.results.length === 1);
+  assert.equal(hub.results[0].outcome, "failed");
+  assert.equal(hub.results[0].failure, undefined, "the work failing waits longer");
+});
 
 test("a job runs in its rule's folder with the prompt and context file, and without the hub's secrets", async () => {
   const hub = fakeHub();

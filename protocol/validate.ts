@@ -13,6 +13,7 @@ export type Later = { key: string; at?: string; about?: string; cancel?: boolean
 export type Ask = { title: string; text: string; options: string[]; recommend?: number; about?: string; key?: string };
 export type Notice = { title: string; text: string; key?: string; fyi?: boolean };
 export type Usage = { input?: number; output?: number; cached?: number; cost?: number };
+export type Progress = { stage?: string; done?: number; total?: number; note?: string };
 
 /** Missing figures stay missing: zero is a price or token count that was actually reported. */
 export function addUsage(total: Usage | undefined, more: Usage | undefined): Usage | undefined {
@@ -23,11 +24,15 @@ export function addUsage(total: Usage | undefined, more: Usage | undefined): Usa
   return result;
 }
 export type Result = {
-  outcome: "done" | "nothing" | "failed" | "cancelled";
+  outcome: "done" | "nothing" | "failed" | "blocked" | "cancelled";
+  /** "transient" = the environment failed and it may work on its own in a minute; "business" = the work itself failed. */
+  failure?: "transient" | "business";
   summary?: string;
   error?: string;
   session?: string;
   usage?: Usage;
+  /** How far a round has got, in the Agent's own words: which step, how many done, and what is left. */
+  progress?: Progress;
   ask?: Ask[];
   notice?: Notice[];
   resolve?: { card: number; reason: string }[];
@@ -147,6 +152,23 @@ const validLater = (later: Item) =>
     ? later.at === undefined
     : dateTime(later.at) && text(later.about, 4000) && later.cancel === undefined);
 
+/** How far a round got: a step to name, two counts that don't go backwards, and a note for whoever reads it later. */
+const validProgress = (value: unknown) => {
+  if (value === undefined) return true;
+  if (!isItem(value)) return false;
+  const progress = value as Item;
+  if (!only(progress, ["stage", "done", "total", "note"])) return false;
+  if (!optional(progress.stage, 100) || !optional(progress.note, 500)) return false;
+  if (progress.done !== undefined && !(Number.isSafeInteger(progress.done) && (progress.done as number) >= 0))
+    return false;
+  if (progress.total !== undefined && !(Number.isSafeInteger(progress.total) && (progress.total as number) >= 0))
+    return false;
+  if (progress.total !== undefined && progress.done !== undefined) {
+    if ((progress.total as number) < (progress.done as number)) return false;
+  }
+  return true;
+};
+
 const validUsage = (usage: unknown) =>
   usage === undefined ||
   (isItem(usage) &&
@@ -158,17 +180,38 @@ export function parseResult(input: unknown): Result {
   }
   const result = { ...input } as Item;
   if (
-    !only(result, ["outcome", "summary", "error", "session", "usage", "ask", "notice", "resolve", "later", "events"])
+    !only(result, [
+      "outcome",
+      "failure",
+      "summary",
+      "error",
+      "session",
+      "usage",
+      "progress",
+      "ask",
+      "notice",
+      "resolve",
+      "later",
+      "events",
+    ])
   ) {
     throw new InputError("结果里有不认识的字段");
   }
-  if (!["done", "nothing", "failed", "cancelled"].includes(result.outcome as string)) {
-    throw new InputError("outcome 只能是 done、nothing、failed、cancelled");
+  if (!["done", "nothing", "failed", "blocked", "cancelled"].includes(result.outcome as string)) {
+    throw new InputError("outcome 只能是 done、nothing、failed、blocked、cancelled");
+  }
+  if (result.failure !== undefined && !["transient", "business"].includes(result.failure as string)) {
+    throw new InputError("failure 只能是 transient 或 business");
   }
   if (!optional(result.summary, 500) || !optional(result.error, 500) || !optional(result.session, 500)) {
     throw new InputError("summary、error、session 最多 500 字");
   }
   if (!validUsage(result.usage)) throw new InputError("usage 要是对象，里面要是有限的非负数字");
+  if (!validProgress(result.progress)) {
+    throw new InputError(
+      "progress 要有 stage、done、total、note 里的字段：done 和 total 是非负整数，total 不小于 done",
+    );
+  }
   if (!listOf(result.ask, 5, validAsk)) {
     throw new InputError("ask 每一项要有 title、text 和 2 到 5 个 options，recommend 是其中一个的序号，最多 5 项");
   }

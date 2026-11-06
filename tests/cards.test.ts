@@ -71,6 +71,24 @@ function underRules(change: (rules: any) => void, then: () => void) {
   }
 }
 
+test("an answer whose rule is gone is recorded and told, not silently dropped", () => {
+  clean();
+  const { id } = asked(1);
+  underRules(
+    (rules) => {
+      rules.rules = rules.rules.filter((rule: { name: string }) => rule.name !== "意见");
+    },
+    () => {
+      assert.equal(answer(id, { choice: 1, by: "me" }, at(2)).changed, true);
+      assert.equal(card(id).state, "decided", "the answer is still recorded");
+      const notices = all<any>("SELECT title, text FROM cards WHERE kind = 'notice'");
+      assert.equal(notices.length, 1, "the owner is told");
+      assert.match(notices[0].text, /意见/);
+      assert.match(notices[0].text, /回答/);
+    },
+  );
+});
+
 test("the same question isn't asked twice while it's open, and can be asked again once it's closed", () => {
   clean();
   const { id } = asked(1);

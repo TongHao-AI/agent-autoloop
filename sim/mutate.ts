@@ -7,7 +7,7 @@ import { join } from "node:path";
 const edits: [string, string, string, string][] = [
   ["event-duplicate", "decide.ts", "if (existing) {", "if (false && existing) {"],
   ["source-boundary", "decide.ts", "rule.when.source === source", "true"],
-  ["parallel-lane", "decide.ts", 'id, rule.parallel ? event.subject : "")', 'id, "")'],
+  ["parallel-lane", "decide.ts", 'const lane = rule.parallel ? event.subject : "";', 'const lane = "";'],
   ["session-in-use", "decide.ts", "going.some((other) => (other.session ?? other.resume) === session)", "false"],
   ["resume-after-stop", "decide.ts", 'last?.state !== "cancelled" && ', ""],
   ["group-capacity", "decide.ts", "claimed.filter((other) => other.grp === run.grp).length <", "0 <"],
@@ -18,7 +18,13 @@ const edits: [string, string, string, string][] = [
     'run.state === "queued" &&\n    agents.includes(ruleNamed(draft, run.rule)?.to ?? "")',
     'run.state === "queued" &&\n    true',
   ],
-  ["retry-delay", "decide.ts", "5 * MINUTE * 2 ** (attempts - 1)", "0 * MINUTE * 2 ** (attempts - 1)"],
+  [
+    "retry-delay",
+    "decide.ts",
+    "const first = transient ? MINUTE : 5 * MINUTE;",
+    "const first = transient ? MINUTE : 0 * MINUTE;",
+  ],
+  ["retry-transient", "decide.ts", "const first = transient ? MINUTE :", "const first = transient ? 0 * MINUTE :"],
   [
     "receipt-replay",
     "decide.ts",
@@ -33,8 +39,8 @@ const edits: [string, string, string, string][] = [
   [
     "answer-wakeup",
     "decide.ts",
-    "if (rule) enqueue(draft, rule, eventId, card.lane,",
-    "if (false) enqueue(draft, rule, eventId, card.lane,",
+    "const run = enqueue(draft, rule, eventId, card.lane,",
+    "const run = 0 as unknown as number; if (false) enqueue(draft, rule, eventId, card.lane,",
   ],
   ["quiet-delivery", "decide.ts", "if (card.quiet ||", "if (false ||"],
   ["delivery-lease", "decide.ts", "not_before: iso(now + MINUTE)", "not_before: iso(now)"],
@@ -70,6 +76,9 @@ const tests = [
   "queue-costs",
   "http",
   "resume-thread",
+  "retry",
+  "progress",
+  "thread",
 ].map((n) => `tests/${n}.test.ts`);
 export function mutate() {
   const root = join(import.meta.dirname, "..");

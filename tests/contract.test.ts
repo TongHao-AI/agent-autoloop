@@ -118,7 +118,7 @@ test("a block needing the owner is handed off without restarting completed work"
     { session: "browser-session" },
   );
   assert.equal(result.problem, undefined);
-  assert.equal(result.result.outcome, "done", "the round ends while its question remains open");
+  assert.equal(result.result.outcome, "blocked", "the round that waits for the owner ends as blocked");
   assert.deepEqual(result.result.ask, receipt.ask);
   assert.equal(result.result.later, undefined);
   assert.equal(result.result.session, "browser-session");

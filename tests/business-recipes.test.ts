@@ -152,7 +152,7 @@ test("Feishu authorization failure asks once and never publishes the old snapsho
   const { dir, run, parsed } = collect("auth");
   assert.equal(run.status, 0, run.stderr);
   assert.equal(parsed.problem, undefined);
-  assert.equal(parsed.result.outcome, "done");
+  assert.equal(parsed.result.outcome, "blocked");
   assert.equal(parsed.result.ask?.length, 1);
   assert.equal(parsed.result.events, undefined);
   assert.doesNotMatch(run.stdout + run.stderr, /secret must not|old data/);

@@ -2,7 +2,16 @@
 // to give. Time and secrets come in as arguments, so the same input on the same view always decides the same.
 import { credential, digest, type Environment } from "./credentials.ts";
 import { latestBefore, nextRun, parseCron } from "./cron.ts";
-import { deadlines, MINUTE, offlineCard, OFFLINE_AFTER, RUN_LEASE, SEEN_EVERY, WORKER_FRESH } from "./due.ts";
+import {
+  deadlines,
+  MINUTE,
+  offlineCard,
+  OFFLINE_AFTER,
+  PROGRESS_STALE,
+  RUN_LEASE,
+  SEEN_EVERY,
+  WORKER_FRESH,
+} from "./due.ts";
 import { AuthError, Conflict, InputError, NotFound } from "./errors.ts";
 import { iso, rows, type Change, type Fact, type Row, type Table, type View } from "./evolve.ts";
 import {
@@ -239,7 +248,16 @@ function ingest(draft: Draft, source: string, given: unknown) {
     const words = `同一条处理链已超过 ${MAX_HOPS} 层，后续事件已记录，没有继续派发。`;
     notify(draft, `hops:${source}:${event.id}`, "事件循环已停止", words, { once: true });
   }
-  for (const rule of taking) enqueue(draft, rule, id, rule.parallel ? event.subject : "");
+  for (const rule of taking) {
+    // A round that waits for the owner holds its thread: what comes in meanwhile waits with it.
+    const lane = rule.parallel ? event.subject : "";
+    const waiting = rows(draft.view, "runs", { rule: rule.name, lane, state: "blocked" }).at(-1);
+    if (waiting) {
+      put(draft, "run_events", `${waiting.id}:${id}`, { run_id: waiting.id, event_id: id });
+      // Mark it: this one arrived while the round was waiting for the owner.
+      put(draft, "events", id, { waited: 1 });
+    } else enqueue(draft, rule, id, lane);
+  }
   return { event: id, duplicate: false, routed: taking.map((rule) => rule.name), paused };
 }
 
@@ -248,6 +266,54 @@ function heldRun(draft: Draft, id: number, token: string, states: string[]) {
   const issued = run && states.includes(run.state) && run.issued !== null;
   if (!issued || credential(draft.env, "run", id, run.issued) !== token) throw new AuthError("这件活不归这个令牌");
   return run;
+}
+
+/** What a worker says it has got to: a mark that changes only when the round moves. */
+const MARK = /^[A-Za-z0-9_-]{1,64}$/;
+const POSITIVE_ID = /^[1-9]\d*$/;
+
+/** What the round said it had got to, kept with the round. */
+function keepProgress(draft: Draft, id: number, result: Result) {
+  if (!result.progress) return;
+  put(draft, "runs", id, { progress: JSON.stringify(result.progress), progress_at: draft.at });
+}
+
+/**
+ * A round that waits for the owner: it asks, and it settles nothing. It is not put back in the queue, because only the
+ * owner can undo what it is waiting for; a round that asks again on its own is a round that asks twice.
+ */
+function applyBlocked(draft: Draft, run: Row, result: Result) {
+  const { id } = run;
+  const rejected: Rejected[] = [];
+  put(draft, "runs", id, {
+    state: "blocked",
+    finished_at: draft.at,
+    summary: result.summary ?? "",
+    error: null,
+    cancel_at: null,
+  });
+  keepProgress(draft, id, result);
+  const eventIds = eventsOf(draft.view, id).map((event) => event.id);
+  for (const card of rows(draft.view, "cards", { answer_event: eventIds, state: "decided" })) {
+    put(draft, "cards", card.id, {
+      state: "done",
+      result: result.summary ?? "",
+      closed_at: draft.at,
+      version: card.version + 1,
+    });
+  }
+  for (const item of result.resolve ?? []) rejected.push({ card: item.card, reason: "这一轮在等你处理，没有结案" });
+  for (const ask of result.ask ?? []) cardFromReceipt(draft, run, "ask", ask);
+  for (const notice of result.notice ?? []) cardFromReceipt(draft, run, "notice", notice);
+  for (const _ of result.later ?? []) rejected.push({ what: "later", reason: "这一轮在等你处理，没有约复查" });
+  for (const event of result.events ?? []) {
+    rejected.push({ what: "events", reason: `这一轮在等你处理，没有发 ${event.type}` });
+  }
+  if (ruleNamed(draft, run.rule)?.tell === "always" && !result.ask?.length) {
+    const once = { fyi: true, once: true, ...threadOf(run), source: sourceOf(draft.view, id), run: id };
+    notify(draft, `run:${id}:blocked`, run.rule, result.summary || "这一轮在等你处理。", once);
+  }
+  return rejected;
 }
 
 function cardFromReceipt(draft: Draft, run: Row, kind: string, card: Row) {
@@ -270,11 +336,15 @@ function sweep(draft: Draft) {
     const lastSeen = seen ? Date.parse(seen.seen_at) : undefined;
     if (lastSeen !== undefined && now - lastSeen <= WORKER_FRESH) {
       closeOffline(draft, worker);
-      const inDoubt = (run: Row) => workerOf(draft.view, run) === worker && Date.parse(run.seen_at) < now - RUN_LEASE;
+      const inDoubt = (run: Row) =>
+        workerOf(draft.view, run) === worker &&
+        (run.mark ? Date.parse(run.mark_at) < now - PROGRESS_STALE : Date.parse(run.seen_at) < now - RUN_LEASE);
       for (const run of rows(draft.view, "runs", { state: "claimed" }).filter(inDoubt)) {
         put(draft, "runs", run.id, { state: "unknown" });
         const agent = configuration(draft.view, run.rules_version).agents[run.agent].name;
-        const words = `交给 ${agent} 后超过 5 分钟没有回音，不确定做没做完；后续新任务照常处理。`;
+        const words = run.mark
+          ? `交给 ${agent} 后 ${PROGRESS_STALE / MINUTE} 分钟没有进展（进展标记没变），不确定做没做完；后续新任务照常处理。`
+          : `交给 ${agent} 后超过 5 分钟没有回音，不确定做没做完；后续新任务照常处理。`;
         notify(draft, `run:${run.id}:unknown`, run.rule, words, threadOf(run));
       }
     }
@@ -341,7 +411,12 @@ const ruleGone = (run: Row): [string, string] => [
 function retryLater(draft: Draft, run: Row, result: Result) {
   const { id } = run;
   const attempts = run.attempts + 1;
-  const notBefore = draft.now + Math.min(5 * MINUTE * 2 ** (attempts - 1), 60 * MINUTE);
+  // The environment failing and the work failing want different patience: one may pass on its own in a minute,
+  // the other needs the owner or a real change, so it waits longer.
+  const transient = result.failure === "transient";
+  const first = transient ? MINUTE : 5 * MINUTE;
+  const cap = transient ? 15 * MINUTE : 60 * MINUTE;
+  const notBefore = draft.now + Math.min(first * 2 ** (attempts - 1), cap);
   const error = (result.error ?? "").trim().replace(/[。.]+$/, "") || "没说原因";
   const unclaimed = nulls("claim", "claimed_at", "seen_at", "cancel_at");
   const rejected: Rejected[] = [];
@@ -404,6 +479,7 @@ function applyReceipt(draft: Draft, run: Row, result: Result) {
   const summary = result.summary ?? "";
   const rejected: Rejected[] = [];
   put(draft, "runs", id, { state: result.outcome, finished_at: draft.at, summary, error: null, cancel_at: null });
+  keepProgress(draft, id, result);
   closeOpen(draft, (key) => key === `run:${id}:failing`, "后来跑成了");
   closeOpen(draft, (key) => key === `run:${id}:unknown`, "结果回来了");
   const eventIds = eventsOf(draft.view, id).map((event) => event.id);
@@ -456,6 +532,7 @@ function finish(draft: Draft, id: number, token: string, given: unknown) {
     });
     closeStopped(draft, id, "已停止");
   } else if (result.outcome === "failed") rejected = retryLater(draft, run, result);
+  else if (result.outcome === "blocked") rejected = applyBlocked(draft, run, result);
   else rejected = applyReceipt(draft, run, result);
   put(draft, "runs", id, { last_answer: JSON.stringify(rejected) });
   return { rejected };
@@ -494,7 +571,24 @@ function answer(draft: Draft, id: number, given: Row) {
   const eventId = recordEvent(draft, card.source ?? SCHEDULE, event, rule ? [rule.name] : []);
   const decision = { choice: given.choice ?? null, answer: text, by: given.by ?? null, decided_at: draft.at };
   put(draft, "cards", id, { state: "decided", ...decision, answer_event: eventId, version: card.version + 1 });
-  if (rule) enqueue(draft, rule, eventId, card.lane, card.agent === rule.to ? card.session : null);
+  if (rule) {
+    const run = enqueue(draft, rule, eventId, card.lane, card.agent === rule.to ? card.session : null);
+    // What came in while it was waiting goes with it; what it was waiting for is already in the session.
+    const waited = card.run_id ? draft.view.get("runs", card.run_id) : undefined;
+    for (const event of waited ? eventsOf(draft.view, waited.id) : []) {
+      if (event.id === eventId || !event.waited) continue;
+      put(draft, "run_events", `${run}:${event.id}`, { run_id: run, event_id: event.id });
+    }
+  } else if (card.rule) {
+    // The rule that asked is gone: the answer is kept, but nobody can go on with it, so say so.
+    notify(
+      draft,
+      `card:${id}:no-rule`,
+      "这条问题没有规则接着做",
+      `你刚回答的「${card.title}」，原来的规则「${card.rule}」已经不在了（可能改名或删掉了），没有活能接着干。` +
+        "你的回答记在卡片上了；要这件事继续，按现在的规则再说一遍。",
+    );
+  }
   return { changed: true, state: "decided" };
 }
 
@@ -684,12 +778,26 @@ const HANDLERS: Record<string, (draft: Draft, ...args: any[]) => unknown> = {
     put(draft, "cards", told.card, { text, created_at: draft.at });
     return { ...told, duplicate: false };
   },
-  heartbeat(draft, worker, running) {
+  heartbeat(draft, worker, running, marks) {
+    for (const [id, mark] of Object.entries(marks ?? {})) {
+      if (!POSITIVE_ID.test(id)) throw new InputError("进展标记要属于某一轮");
+      if (typeof mark !== "string" || !MARK.test(mark)) {
+        throw new InputError("进展标记要是 64 字以内的字母、数字、横线或下划线");
+      }
+    }
     closeOffline(draft, worker);
     const held = (run?: Row) => run?.state === "claimed" && workerOf(draft.view, run) === worker;
     const inHand = running.map((id: number) => draft.view.get("runs", id)).filter(held);
+    // The mark only moves when the round moves: the same mark again means it is standing still. It is kept even when
+    // nothing else changed, so a round that stands still can be told apart from one that never said where it was.
+    const moved = inHand.filter((run: Row) => {
+      const mark = marks?.[String(run.id)];
+      return mark !== undefined && mark !== run.mark;
+    });
+    for (const run of moved) put(draft, "runs", run.id, { mark: marks![String(run.id)], mark_at: draft.at });
     // All stamped together, so however many runs a worker has on, it's one fact each time.
-    if ([draft.view.get("seen", `worker:${worker}`), ...inHand].every((row) => justSeen(draft, row))) return;
+    if (!moved.length && [draft.view.get("seen", `worker:${worker}`), ...inHand].every((row) => justSeen(draft, row)))
+      return;
     put(draft, "seen", `worker:${worker}`, { kind: "worker", name: worker, seen_at: draft.at });
     for (const run of inHand) put(draft, "runs", run.id, { seen_at: draft.at });
   },
