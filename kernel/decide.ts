@@ -766,6 +766,24 @@ const HANDLERS: Record<string, (draft: Draft, ...args: any[]) => unknown> = {
     // A key of its own: told once for good, a notice under the same key would never get through after a question.
     return createCard(draft, { ...question, key: `elsewhere-ask:${name}:${matter}`, kind: "ask", ...thread });
   },
+  /**
+   * A notification from outside the hub: it becomes a card of this hub's own, so it wears the same style
+   * as everything else the hub sends. It is a notice (nothing to answer) but the same key never posts twice.
+   * The tone decides the colour of the card's head, so an outside system can say how urgent it is.
+   * raw keeps a card another system built itself (its own buttons carry its own actions).
+   */
+  notify(draft, key, title, text, tone = "", raw = "", to = "", widgets = "") {
+    const told = createCard(draft, { key, kind: "notice", title, text, fyi: 1, once: 1, tone, raw, to, widgets });
+    if (!told.duplicate) return told;
+    // Said again after every channel gave up on it: it gets another go.
+    const givenUp = rows(draft.view, "deliveries", { card_id: told.card, given_up: 1 });
+    for (const { card_id, channel } of givenUp) {
+      put(draft, "deliveries", `${card_id}:${channel}`, { given_up: 0, ...NOT_TRYING });
+    }
+    if (!givenUp.length) return told;
+    put(draft, "cards", told.card, { text, title, created_at: draft.at });
+    return { ...told, duplicate: false };
+  },
   tell(draft, key, title, text) {
     const told = createCard(draft, { key, title, text, kind: "notice", fyi: true, once: true });
     if (!told.duplicate) return told;
