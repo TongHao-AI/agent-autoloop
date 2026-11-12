@@ -56,6 +56,11 @@ description: 配置 Agent 自动化中台：加规则、接新的事件插件、
 
 ## 接一个 Agent
 
+本机默认 Agent 可用 `use: "mcode"`。它运行 `mcode exec` 的无界面模式，默认模型为
+`custom_provider:glm/glm-5.3`，并通过 `--session` 续接会话。规则里的 `model` 仍可对单条规则覆盖；未填写时使用 GLM-5.3。
+后台运行不具备 TUI 的交互式 ask 权限：`read` 映射为 `--permission off`，`edit` 映射为 `smart`，`full` 映射为 `full`。
+IPSG 只读研判规则应继续使用 `access: "read"`，生产写操作必须走人工卡片确认。
+
 任何能打印最后一条消息的命令，在 `rules.json` 的 `agents` 写一行：
 
 ```json
