@@ -17,6 +17,8 @@ export type Card = {
   answer: string | null;
   result: string | null;
   link: string | null;
+  /** Rule name that produced the card, when the hub has one. */
+  rule?: string;
   /** How urgent the head of the card should look: blue / green / orange / red / grey. */
   tone?: string | null;
   /**
