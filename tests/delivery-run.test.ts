@@ -24,7 +24,7 @@ mkdirSync(bin);
 writeFileSync(
   join(bin, "gh"),
   `#!${process.execPath}
-const { appendFileSync, readFileSync } = require("node:fs");
+import { appendFileSync, readFileSync } from "node:fs";
 const { FAKE_GH_CALLS, FAKE_GH_ROUTES, FAKE_GH_STATUSES } = process.env;
 const args = process.argv.slice(2);
 appendFileSync(FAKE_GH_CALLS, args.join(" ") + "\\n");

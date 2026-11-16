@@ -459,16 +459,18 @@ test("cancellation waits for a child ignoring SIGTERM, including after worker re
   const hub = fakeHub();
   let clock = Date.now();
   const ready = join(folder, "stubborn-ready");
-  const script = said(
-    "stubborn.cjs",
+  const script = join(folder, "stubborn.cjs");
+  writeFileSync(
+    script,
     `process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(${JSON.stringify(ready)}, String(process.pid)); setInterval(() => {}, 1000);`,
   );
   hub.jobs.push(job({ command: [process.execPath, script] }));
   const w = worker(hub, { now: () => clock });
-  await until(w, () => existsSync(ready));
-  const entry = w.entries()[0];
-  const child = readFileSync(ready, "utf8");
+  let entry: ReturnType<typeof w.entries>[number] | undefined;
   try {
+    await until(w, () => existsSync(ready));
+    entry = w.entries()[0];
+    const child = readFileSync(ready, "utf8");
     hub.cancel = [entry.run];
     await w.tick();
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -487,10 +489,13 @@ test("cancellation waits for a child ignoring SIGTERM, including after worker re
     assert.equal(live, false);
     assert.equal(hub.results[0].outcome, "cancelled");
   } finally {
-    try {
-      process.kill(-entry.pid!, "SIGKILL");
-    } catch {}
-    rmSync(entry.dir, { recursive: true, force: true });
+    const remaining = entry ?? w.entries()[0];
+    if (remaining) {
+      try {
+        if (remaining.pid) process.kill(-remaining.pid, "SIGKILL");
+      } catch {}
+      rmSync(remaining.dir, { recursive: true, force: true });
+    }
   }
 });
 
