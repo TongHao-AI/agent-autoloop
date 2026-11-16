@@ -3,9 +3,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { test } from "node:test";
 import mcode, { DEFAULT_MODEL } from "../plugins/mcode/agent.ts";
 
@@ -19,8 +17,10 @@ const turn = {
   folder: "/run",
 };
 
-test("MCode falls back to the user's default install directory when PATH is bare", () => {
-  const scratch = mkdtempSync(join(tmpdir(), "agent-autoloop-mcode-path-"));
+test("MCode falls back to the user's default install directory when PATH is bare", (t) => {
+  const scratch = mkdtempSync(join(import.meta.dirname, ".mcode-path-"));
+  chmodSync(scratch, 0o700);
+  t.after(() => rmSync(scratch, { recursive: true, force: true }));
   const fake = join(scratch, ".minimax-code", "bin", "mcode");
   mkdirSync(join(scratch, ".minimax-code", "bin"), { recursive: true });
   writeFileSync(fake, "#!/bin/sh\nprintf 'fake mcode\\n'\n", { mode: 0o755 });
