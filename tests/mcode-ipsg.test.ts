@@ -1,15 +1,24 @@
 // Failure mode: display-name heuristics leave the real rules unrestricted, and access changes bypass the guard.
+// [INPUT]: Dedicated adapter with isolated rules and filesystem behavior.
+// [OUTPUT]: Launch policy tests without relying on the user's production rules or directories.
+// [POS]: IPSG policy regression tests; runtime rules are checked separately before deployment.
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { beforeEach, test } from "node:test";
 import { adapterFor, type Turn } from "../worker/agents.ts";
 import mcode, { DEFAULT_MODEL } from "../plugins/mcode/agent.ts";
 
-const rules = JSON.parse(fs.readFileSync("/Users/x/projects/ipsg-autoloop/rules.json", "utf8"));
-const agent = rules.agents.mcode;
+const agent = { use: "mcode-ipsg", access: "read" as const, model: undefined, program: undefined };
 const scope = "/Users/x/projects/ipsg-supervisor";
+const rules = { rules: [{ to: "mcode", cwd: scope }], elsewhere: [] };
+beforeEach((t) => {
+  assert.ok("mock" in t);
+  const realpath = fs.realpathSync;
+  t.mock.method(fs, "realpathSync", (path: fs.PathLike) => (path === scope ? scope : realpath(path)));
+});
 const base: Turn = {
   prompt: "只构造参数，不执行",
   session: "new",
@@ -22,7 +31,7 @@ const base: Turn = {
   folder: "unused",
 };
 
-test("real IPSG rules select the dedicated adapter and all its rules have the canonical cwd", async () => {
+test("IPSG rules select the dedicated adapter and the canonical cwd", async () => {
   assert.equal(agent.use, "mcode-ipsg");
   const adapter = await adapterFor(agent.use);
   const targets = [...rules.rules, ...rules.elsewhere].filter((rule) => rule.to === "mcode");

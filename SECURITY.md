@@ -19,7 +19,7 @@
 
 ## MCode 的 IPSG 启动白名单
 
-`use: "mcode-ipsg"` 显式选择受限入口，不按显示名称或 cwd 猜测业务身份。入口只接受 `access: "read"`，`edit`、`full` 均拒绝；禁止配置 `program`。cwd 必须为 `/Users/x/projects/ipsg-supervisor`，且启动参数构造时 `realpath` 必须仍等于该路径，缺失、悬空链接及符号链接逃逸均拒绝。模型只接受默认的 `custom_provider:glm/glm-5.3`，固定 `coding`、`stream-json`，程序使用当前用户默认安装位置 `~/.minimax-code/bin/mcode` 的绝对路径，不通过 PATH 查找。通用 `mcode` 入口仍保留原有权限、模型和程序覆盖能力。
+`use: "mcode-ipsg"` 显式选择受限入口，不按显示名称或 cwd 猜测业务身份。入口只接受 `access: "read"`，`edit`、`full` 均拒绝；禁止配置 `program`。cwd 必须为 `/Users/x/projects/ipsg-supervisor`，且启动参数构造时 `realpath` 必须仍等于该路径，缺失、悬空链接及符号链接逃逸均拒绝。模型只接受默认的 `custom_provider:glm/glm-5.3`，固定 `coding`、`stream-json`，程序使用当前用户默认安装位置 `~/.minimax-code/bin/mcode` 的绝对路径，不通过 PATH 查找。通用 `mcode` 入口在规范 IPSG 路径且 access=read 时复用同一白名单；其他目录或权限仍保留原有覆盖能力。白名单仅约束启动参数，不等于操作系统沙箱。
 
 这是启动级白名单，不是命令级过滤器或 OS 沙箱。`read` 映射为 `--permission off`，其实际工具授权语义尚未验证，不能据此保证文件、数据库或交换机只读。路径检查与进程启动之间仍存在竞态，也不限制目录内链接、CLI 用户配置、工具或已有会话能访问的资源；默认安装程序和安装目录优先加载的同名插件仍须可信。代码及规则变更不代表正在运行的 worker 已重载，须另行部署、重启和验证后才能确认运行生效。
 

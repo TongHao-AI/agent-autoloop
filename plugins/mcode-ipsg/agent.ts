@@ -1,38 +1,31 @@
-// Launch allowlist only: CLI permissions do not constitute an OS or command sandbox.
-import fs from "node:fs";
+// The IPSG entry point: read-only judging in the IPSG scope, held to a launch allowlist. The allowlist itself lives
+// in the mcode adapter, which applies it to every read-only turn in that scope, whoever started it.
+// [INPUT]: MCode adapter and canonical IPSG launch scope.
+// [OUTPUT]: A read-only IPSG adapter that rejects launch overrides before starting a process.
+// [POS]: Explicit IPSG entry point; general stream parsing remains in the sibling MCode adapter.
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Adapter, Turn } from "../../worker/agents.ts";
-import mcode, { DEFAULT_MODEL } from "../mcode/agent.ts";
-
-const CWD = "/Users/x/projects/ipsg-supervisor";
-const PROGRAM = join(homedir(), ".minimax-code", "bin", "mcode");
+import mcode, { IPSG_READ_CWD } from "../mcode/agent.ts";
 
 type LaunchTurn = Turn & { promptMode?: string; outputFormat?: string };
 
-function reject(field: string): never {
+function refuse(field: string): never {
   throw new Error(`IPSG read 策略拒绝：${field} 不符合启动白名单`);
 }
 
 export default {
   ...mcode,
   command(turn: LaunchTurn) {
-    if (turn.access !== "read") reject("access");
-    if (turn.program !== undefined) reject("program");
-    if (turn.cwd !== CWD) reject("cwd");
-    // Check the entire path, including parent symlinks; missing or dangling paths fail closed.
-    try {
-      if (fs.realpathSync(turn.cwd) !== CWD) reject("cwd realpath");
-    } catch {
-      reject("cwd realpath");
-    }
-    if (turn.model !== undefined && turn.model !== DEFAULT_MODEL) reject("model");
-    if (turn.promptMode !== undefined && turn.promptMode !== "coding") reject("prompt-mode");
-    if (turn.outputFormat !== undefined && turn.outputFormat !== "stream-json") reject("output-format");
-    return mcode.command({ ...turn, cwd: CWD, model: DEFAULT_MODEL, access: "read", program: PROGRAM });
+    // This entry point only starts read-only turns in the IPSG scope. Anything else is refused here rather than
+    // passed to the allowlist, which would read a different scope as the one it holds.
+    if (turn.access !== "read") refuse("access");
+    if (turn.cwd !== IPSG_READ_CWD) refuse("cwd");
+    return mcode.command(turn);
   },
   check(program) {
     if (program !== undefined) return "IPSG read 策略拒绝：program 必须省略";
-    return mcode.check(PROGRAM);
+    return mcode.check(join(homedir(), ".minimax-code", "bin", process.platform === "win32" ? "mcode.exe" : "mcode"));
   },
 } satisfies Adapter;
