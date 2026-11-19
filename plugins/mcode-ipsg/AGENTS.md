@@ -1,6 +1,7 @@
 # mcode-ipsg/
 > L2 | Parent: ../../AGENTS.md
 
-agent.ts: Explicit IPSG read-only entry point. Delegates stream parsing and launch policy to mcode, and rejects non-read access.
+agent.ts: 显式 IPSG 只读入口，使用领域启动策略和通用流解析。
+policy.ts: 定义只读启动范围、允许参数和拒绝条件。
 
 [PROTOCOL]: Update this header on change, then check AGENTS.md
