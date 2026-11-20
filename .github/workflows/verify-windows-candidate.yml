@@ -1,0 +1,26 @@
+# [INPUT]: The exact candidate commit and the Windows checks already used by this repository.
+# [OUTPUT]: Native Windows behavior and installation results for the candidate.
+# [POS]: Verification branch only. No production or release credentials are used.
+# [PROTOCOL]: Update this header on change, then check AGENTS.md
+name: Verify Windows candidate
+on:
+  push:
+    branches: [verify/windows-2e9b671]
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 2e9b6711d38922ff61da77580b945e60e098cd1c
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run test:windows
+      - run: node --disable-warning=ExperimentalWarning scripts/install-smoke-windows.ts
